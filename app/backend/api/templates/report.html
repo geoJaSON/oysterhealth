@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  @page { size: Letter; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Liberation Sans", "Helvetica Neue", Arial, sans-serif;
+    color: #16223a; font-size: 11pt; line-height: 1.45; margin: 0;
+  }
+  .head { border-bottom: 2px solid #16223a; padding-bottom: 10px; margin-bottom: 16px; }
+  .brand { font-size: 10pt; letter-spacing: 0.12em; text-transform: uppercase; color: #4a6694; }
+  .region { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.08em; color: #6b7a96; margin-top: 10px; }
+  h1 { font-size: 22pt; margin: 2px 0 0; }
+  .verdict-row { margin: 12px 0 4px; }
+  .verdict {
+    display: inline-block; padding: 4px 14px; border-radius: 99px;
+    font-size: 12pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #fff;
+  }
+  .generated { font-size: 8.5pt; color: #6b7a96; margin-left: 10px; }
+  .headline { font-size: 12.5pt; margin: 14px 0; }
+  .rec { background: #eef5ff; border-left: 4px solid #2f6fdb; padding: 9px 13px; margin: 0 0 18px; }
+  .rec .lbl { font-size: 8pt; text-transform: uppercase; letter-spacing: 0.07em; color: #2f6fdb; font-weight: 700; }
+  .rec .txt { font-size: 11pt; }
+  h2 { font-size: 9.5pt; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7a96;
+       border-bottom: 1px solid #d6deea; padding-bottom: 4px; margin: 0 0 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 7px 4px; vertical-align: top; border-bottom: 1px solid #e6ebf3; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .d-label { font-weight: 700; white-space: nowrap; }
+  .d-val { text-align: right; font-weight: 700; white-space: nowrap; }
+  .d-detail { color: #46546e; font-size: 10pt; }
+  .tag { font-size: 7.5pt; text-transform: uppercase; color: #6b7a96; border: 1px solid #c5d0e0;
+         border-radius: 3px; padding: 0 4px; margin-left: 4px; }
+  .coverage { font-size: 9pt; color: #6b7a96; font-style: italic; margin-top: 14px; }
+  .foot { margin-top: 22px; padding-top: 8px; border-top: 1px solid #d6deea;
+          font-size: 8pt; color: #8694ac; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <div class="brand">🦪 OysterHealth — Lease Condition Briefing</div>
+    <div class="region">{{ region_label }}</div>
+    <h1>{{ area_name }}</h1>
+    <div class="verdict-row">
+      <span class="verdict" style="background: {{ verdict_color }};">{{ verdict_label }}</span>
+      <span class="generated">Generated {{ generated_at }}{% if computed_at %} · data as of {{ computed_at }}{% endif %}</span>
+    </div>
+  </div>
+
+  <p class="headline">{{ headline }}</p>
+
+  {% if recommendation %}
+  <div class="rec">
+    <div class="lbl">What to do</div>
+    <div class="txt">{{ recommendation }}</div>
+  </div>
+  {% endif %}
+
+  <h2>What's driving this</h2>
+  <table>
+    {% for d in drivers %}
+    <tr>
+      <td style="width: 14px;"><span class="dot" style="background: {{ d.color }};"></span></td>
+      <td class="d-label">{{ d.label }}</td>
+      <td class="d-detail">{{ d.detail }}</td>
+      <td class="d-val" style="color: {{ d.color }};">
+        {{ d.headline }}{% if d.confidence in ("estimated", "modeled") %}<span class="tag">{{ "est" if d.confidence == "estimated" else "model" }}</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <p class="coverage">
+    Based on {{ coverage_available }} of {{ coverage_total }} data sources reporting.
+    Oyster-drill risk is a provisional model; modeled salinity (CMEMS) is coarse in estuaries.
+  </p>
+
+  <div class="foot">
+    OysterHealth aggregates USGS, NOAA CO-OPS, NOAA CoastWatch (ERDDAP) and Copernicus Marine data.
+    Always confirm official state shellfish-harvest closures before working an area.
+  </div>
+</body>
+</html>

@@ -1,0 +1,129 @@
+name: oysterhealth
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: oyster_db
+    restart: unless-stopped
+    # POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD are read directly from
+    # this env_file by the Postgres entrypoint. Do NOT also list them in an
+    # `environment:` block with ${VAR} interpolation — Compose interpolates
+    # those at parse time using a .env next to the compose file (which does
+    # not exist here), would resolve them to empty, and silently override
+    # env_file.
+    env_file: ../../.env
+    ports:
+      # Host 5433 → container 5432 to avoid a clash with a native PostgreSQL
+      # service on Windows. POSTGRES_PORT=5433 in .env keeps scripts in sync.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Files in init/ run automatically the first time the data volume is empty.
+      - ../db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # $$VAR escapes Compose interpolation so the shell inside the container
+      # expands these vars at runtime (where env_file has populated them).
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: oyster_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../docker/Dockerfile.backend
+    container_name: oyster_backend
+    restart: unless-stopped
+    env_file: ../../.env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../backend:/app
+    profiles: ["full"]
+
+  worker_io:
+    build:
+      context: ../backend
+      dockerfile: ../docker/Dockerfile.backend
+    container_name: oyster_worker_io
+    restart: unless-stopped
+    env_file: ../../.env
+    command: celery -A celery_app worker -Q io_bound --concurrency=4 --loglevel=info
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../backend:/app
+    profiles: ["full"]
+
+  worker_geo:
+    build:
+      context: ../backend
+      dockerfile: ../docker/Dockerfile.backend
+    container_name: oyster_worker_geo
+    restart: unless-stopped
+    env_file: ../../.env
+    command: celery -A celery_app worker -Q geo_heavy --concurrency=2 --loglevel=info
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../backend:/app
+    profiles: ["full"]
+
+  beat:
+    build:
+      context: ../backend
+      dockerfile: ../docker/Dockerfile.backend
+    container_name: oyster_beat
+    restart: unless-stopped
+    env_file: ../../.env
+    command: celery -A celery_app beat --loglevel=info
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../backend:/app
+    profiles: ["full"]
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../docker/Dockerfile.frontend
+    container_name: oyster_frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    volumes:
+      - ../frontend:/app
+      - /app/node_modules
+    profiles: ["full"]
+
+volumes:
+  pgdata:
+  redisdata:
