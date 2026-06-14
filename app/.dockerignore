@@ -1,0 +1,12 @@
+# Build-context excludes for the prod web image (Dockerfile.frontend.prod, whose
+# build context is app/). Critically excludes the host frontend/node_modules:
+# `COPY frontend/ .` would otherwise clobber the clean `npm ci` with Windows-built
+# native binaries (esbuild/vite) and break the Linux build.
+frontend/node_modules
+frontend/dist
+frontend/.vite
+scripts/.cache
+backend/.venv
+**/__pycache__
+**/*.pyc
+.git
