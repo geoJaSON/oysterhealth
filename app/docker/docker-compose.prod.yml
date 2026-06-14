@@ -101,19 +101,21 @@ services:
     image: oysterhealth-web
     container_name: oyster_web
     restart: unless-stopped
-    env_file: ../../.env                   # provides SITE_ADDRESS for Caddy auto-TLS
+    env_file: ../../.env                   # SITE_ADDRESS=:80 — serves plain HTTP internally; the
+                                           # shared edge Caddy terminates TLS and routes the domain here
     depends_on:
       - backend
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"                      # HTTP/3 (QUIC)
-    volumes:
-      - caddy_data:/data                   # persist issued TLS certs across restarts
-      - caddy_config:/config
+    # No host ports: another app's Caddy already owns 80/443 and reverse-proxies the
+    # OysterHealth domain to oyster_web:80 over the shared `edge` network. oyster_web
+    # stays on `default` to reach `backend` for /api.
+    networks:
+      - default
+      - edge
+
+networks:
+  edge:
+    external: true                         # `docker network create edge` (shared with the edge Caddy)
 
 volumes:
   pgdata:
   redisdata:
-  caddy_data:
-  caddy_config:
