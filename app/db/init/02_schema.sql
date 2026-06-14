@@ -69,13 +69,16 @@ CREATE INDEX IF NOT EXISTS idx_station_readings_lookup
 
 -- USGS river gauges
 CREATE TABLE IF NOT EXISTS usgs_gauges (
-  id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  site_no TEXT UNIQUE NOT NULL,
-  name    TEXT NOT NULL,
-  river   TEXT,
-  lat     NUMERIC NOT NULL,
-  lon     NUMERIC NOT NULL,
-  region  TEXT NOT NULL CHECK (region IN ('gulf', 'east_coast'))
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  site_no      TEXT UNIQUE NOT NULL,
+  name         TEXT NOT NULL,
+  river        TEXT,
+  lat          NUMERIC NOT NULL,
+  lon          NUMERIC NOT NULL,
+  region       TEXT NOT NULL CHECK (region IN ('gulf', 'east_coast')),
+  -- NOAA National Water Model reach (NHDPlus COMID) for streamflow FORECASTS,
+  -- curated in seed_gauges.py (NLDI coordinate-lookup, magnitude-validated).
+  nwm_reach_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS gauge_readings (
@@ -88,6 +91,24 @@ CREATE TABLE IF NOT EXISTS gauge_readings (
 );
 CREATE INDEX IF NOT EXISTS idx_gauge_readings_lookup
   ON gauge_readings (gauge_id, recorded_at DESC);
+
+-- NOAA National Water Model streamflow FORECASTS per gauge's NWM reach.
+-- One row per (gauge, series, issued_at, valid_time). flow_cfs is the forecast
+-- discharge in ft^3/s (NWPS native unit, same as gauge_readings.discharge_cfs).
+-- Append-only per issuance; the freshwater_forecast indicator reads the latest
+-- issuance's trajectory vs the gauge's recent baseline.
+CREATE TABLE IF NOT EXISTS nwm_forecasts (
+  id         BIGSERIAL PRIMARY KEY,
+  gauge_id   UUID NOT NULL REFERENCES usgs_gauges(id) ON DELETE CASCADE,
+  reach_id   TEXT NOT NULL,
+  series     TEXT NOT NULL CHECK (series IN ('short_range', 'medium_range', 'medium_range_blend')),
+  issued_at  TIMESTAMPTZ NOT NULL,
+  valid_time TIMESTAMPTZ NOT NULL,
+  flow_cfs   NUMERIC,
+  CONSTRAINT nwm_forecasts_uniq UNIQUE (gauge_id, series, issued_at, valid_time)
+);
+CREATE INDEX IF NOT EXISTS idx_nwm_forecasts_lookup
+  ON nwm_forecasts (gauge_id, series, valid_time);
 
 -- HAB alerts
 CREATE TABLE IF NOT EXISTS hab_alerts (

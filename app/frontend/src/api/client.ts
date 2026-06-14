@@ -209,6 +209,10 @@ export interface AreaBriefing {
   recommendation: string;
   coverage: Coverage;
   drivers: BriefingDriver[];
+  // Forward-looking freshwater "Outlook" (NWM forecast). Null when the area has
+  // no linked gauge / forecast. Deliberately NOT part of `drivers` — it never
+  // affects the current verdict.
+  forecast: BriefingDriver | null;
   computed_at: string | null;
 }
 

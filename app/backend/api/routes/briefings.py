@@ -100,5 +100,6 @@ async def area_briefing(slug: str, session: AsyncSession = Depends(get_session))
         "recommendation": comp.get("recommendation", ""),
         "coverage": comp.get("coverage", {"available": 0, "total": 0}),
         "drivers": comp.get("drivers", []),
+        "forecast": comp.get("forecast"),
         "computed_at": row.computed_at.isoformat() if row.computed_at else None,
     }

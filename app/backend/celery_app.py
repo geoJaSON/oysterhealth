@@ -13,6 +13,7 @@ app = Celery(
     include=[
         "api.workers.satellite",
         "api.workers.usgs",
+        "api.workers.nwm",
         "api.workers.noaa",
         "api.workers.hab",
         "api.workers.scoring",
@@ -28,6 +29,7 @@ app.conf.task_routes = {
     "api.workers.reports.*":     {"queue": "geo_heavy"},
     "api.workers.maintenance.*": {"queue": "geo_heavy"},
     "api.workers.usgs.*":        {"queue": "io_bound"},
+    "api.workers.nwm.*":         {"queue": "io_bound"},
     "api.workers.noaa.*":        {"queue": "io_bound"},
     "api.workers.hab.*":         {"queue": "io_bound"},
 }
@@ -68,6 +70,12 @@ app.conf.beat_schedule = {
     "fetch-noaa-hourly": {
         "task": "api.workers.noaa.fetch_noaa_stations",
         "schedule": crontab(minute=10, hour="*"),
+    },
+    "fetch-nwm-forecasts-6h": {
+        "task": "api.workers.nwm.fetch_nwm_forecasts",
+        # NWM short-range refreshes hourly, medium-range-blend a few times/day;
+        # every 6h keeps the forward signal current without hammering NWPS.
+        "schedule": crontab(minute=45, hour="*/6"),
     },
     "fetch-hab-daily": {
         "task": "api.workers.hab.fetch_hab_bulletins",

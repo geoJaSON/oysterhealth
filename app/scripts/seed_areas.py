@@ -1,21 +1,39 @@
-"""Seed predefined coastal areas as PostGIS polygons.
+"""Seed coastal areas as PostGIS polygons (idempotent — safe to re-run).
 
-Bounding boxes here are approximate first-cut envelopes for each named area.
-Replace with NOAA/state-published coastline shapefiles when available — the
-ID/slug stays stable so the geom column can be UPDATEd in place later.
+Two kinds of area, both stored as area_type='predefined' rows:
+  - Bbox areas: simple [W, S, E, N] rectangles in the AREAS list below
+    (minor / ungauged bays). Edit a box here and re-run.
+  - Zoned bays: the gauge-fed oyster bays, split into salinity-gradient zones
+    with REAL OSM/NHD geometry by build_zone_geoms.py -> zone_geoms.json, which
+    this script loads. Edit those in build_zone_geoms.py, rebuild, then re-run.
 
-All geometry passes through ST_MakeValid(ST_Force2D(ST_ForcePolygonCCW(...)))
-so PostGIS receives a right-hand-rule, 2D, validated polygon every time.
+This script is the single source of truth for which areas exist: it UPSERTs every
+area in (AREAS + the manifest), then PRUNES any DB area whose slug is no longer
+present — so removing an area is a one-step edit (delete it from AREAS or the
+manifest and re-run). Pruning cascades to the area's indicators + snapshots, and
+is SKIPPED when the manifest is missing, so a missing zone_geoms.json can never
+wipe the zone areas. Slugs are the stable key — keep them stable when editing
+geometry. All geometry passes through ST_MakeValid(ST_Force2D(ST_ForcePolygonCCW(...))).
+
+See AREAS.md in this folder for the full edit workflow.
 """
+import json
+from pathlib import Path
+
 from _db import conn
 
+ZONE_MANIFEST = Path(__file__).parent / "zone_geoms.json"
+
 # (slug, name, region, [west, south, east, north], description, linked_gauges)
+# The 6 gauge-fed bays (mobile/chesapeake/pamlico/barataria/galveston/albemarle)
+# are intentionally absent here — they come from the zone manifest as real-geometry
+# zones. Anything removed from this list (or the manifest) is pruned from the DB on
+# re-seed; see AREAS.md.
 AREAS = [
     # --- Gulf of Mexico ---
-    ("barataria-bay", "Barataria Bay", "gulf",
-     [-90.30, 29.30, -89.75, 29.65],
-     "Louisiana estuary west of the Mississippi delta. Major oyster and shrimp ground.",
-     ["07374000", "07381490"]),
+    # NB: barataria-bay, galveston-bay (gulf) and albemarle-sound (east coast) are
+    # absent here — they're zoned from NHD geometry via the manifest (see
+    # build_zone_geoms.py), alongside mobile/chesapeake/pamlico.
     ("terrebonne-bay", "Terrebonne Bay", "gulf",
      [-90.95, 29.10, -90.50, 29.45],
      "South-central Louisiana bay system. Heavy shrimping.",
@@ -28,10 +46,6 @@ AREAS = [
      [-89.30, 30.20, -88.20, 30.45],
      "Behind the barrier islands from LA to AL. Oysters, shrimp, blue crab.",
      ["07374000", "02469761"]),
-    ("mobile-bay", "Mobile Bay", "gulf",
-     [-88.10, 30.20, -87.80, 30.75],
-     "Alabama's primary estuary. Mobile River discharge dominates salinity.",
-     ["02469761"]),
     ("pensacola-bay", "Pensacola Bay", "gulf",
      [-87.40, 30.30, -86.95, 30.55],
      "Florida panhandle estuary.",
@@ -48,10 +62,6 @@ AREAS = [
      [-82.30, 26.55, -81.85, 26.95],
      "SW Florida estuary fed by the Peace and Myakka rivers.",
      []),
-    ("galveston-bay", "Galveston Bay", "gulf",
-     [-95.10, 29.30, -94.65, 29.85],
-     "Texas's primary oyster bay. Trinity River dominates salinity.",
-     ["08066500"]),
     ("matagorda-bay", "Matagorda Bay", "gulf",
      [-96.70, 28.40, -96.10, 28.80],
      "Texas mid-coast bay.",
@@ -68,24 +78,17 @@ AREAS = [
      [-90.50, 30.10, -89.65, 30.40],
      "Brackish lake north of New Orleans. Connected to Mississippi Sound via the Rigolets.",
      ["07374000"]),
+    ("marsh-island", "Marsh Island", "gulf",
+     [-92.10, 29.42, -91.70, 29.68],
+     "Louisiana marsh island and surrounding oyster grounds between Vermilion Bay "
+     "and Atchafalaya Bay; freshwater dominated by the Atchafalaya River.",
+     ["07381490"]),
 
     # --- East Coast ---
-    ("chesapeake-bay", "Chesapeake Bay", "east_coast",
-     [-76.80, 36.90, -75.80, 39.55],
-     "Full bay, MD/VA. Sub-regions can be added as separate areas later.",
-     ["01578310", "02037500"]),
     ("delaware-bay", "Delaware Bay", "east_coast",
      [-75.50, 38.80, -74.85, 39.45],
      "DE/NJ estuary fed by the Delaware River.",
      []),
-    ("pamlico-sound", "Pamlico Sound", "east_coast",
-     [-76.80, 34.95, -75.45, 35.85],
-     "NC's main sound; fed by the Neuse and Tar–Pamlico rivers.",
-     ["02089000"]),
-    ("albemarle-sound", "Albemarle Sound", "east_coast",
-     [-76.80, 35.85, -75.65, 36.15],
-     "NC's northern sound; fed by the Roanoke and Chowan rivers.",
-     ["02080500"]),
     ("core-sound", "Core Sound", "east_coast",
      [-76.55, 34.60, -76.20, 34.95],
      "Narrow NC sound behind the Outer Banks.",
@@ -123,9 +126,26 @@ def bbox_geojson(bbox: list[float]) -> str:
     )
 
 
+def _rows():
+    """Yield (slug, name, region, geojson_str, description, linked_gauges) for
+    every area — bbox envelopes first, then real-geometry zones from the manifest."""
+    for slug, name, region, bbox, desc, gauges in AREAS:
+        yield slug, name, region, bbox_geojson(bbox), desc, gauges
+    if ZONE_MANIFEST.exists():
+        zones = json.loads(ZONE_MANIFEST.read_text(encoding="utf-8"))
+        for zslug, z in zones.items():
+            yield (zslug, z["name"], z["region"], json.dumps(z["geometry"]),
+                   z["description"], z["linked_gauges"])
+    else:
+        print(f"WARNING: {ZONE_MANIFEST.name} not found — seeding bbox areas only. "
+              "Run build_zone_geoms.py first to add the real zones.")
+
+
 def main() -> None:
+    rows = list(_rows())
+    desired = {r[0] for r in rows}
     with conn() as c:
-        for slug, name, region, bbox, desc, gauges in AREAS:
+        for slug, name, region, geojson, desc, gauges in rows:
             c.execute(
                 """
                 INSERT INTO areas (name, slug, region, area_type, geom, description, linked_gauges)
@@ -143,9 +163,27 @@ def main() -> None:
                   description   = EXCLUDED.description,
                   linked_gauges = EXCLUDED.linked_gauges
                 """,
-                (name, slug, region, bbox_geojson(bbox), desc, gauges),
+                (name, slug, region, geojson, desc, gauges),
             )
-    print(f"Seeded {len(AREAS)} predefined areas.")
+
+        # Prune any DB area no longer in the seed set, so removing an area is a
+        # one-step edit (delete the tuple / manifest entry and re-run). DELETE
+        # cascades to the area's indicators + snapshots. Guarded: skip when the
+        # manifest is absent, so a missing zone_geoms.json can't wipe the zones.
+        pruned: list[str] = []
+        if ZONE_MANIFEST.exists():
+            existing = [s for (s,) in c.execute("SELECT slug FROM areas").fetchall()]
+            for slug in existing:
+                if slug not in desired:
+                    c.execute("DELETE FROM areas WHERE slug = %s", (slug,))
+                    pruned.append(slug)
+        else:
+            print("WARNING: zone_geoms.json absent — skipping prune (won't touch zone areas).")
+
+    n_zones = len(rows) - len(AREAS)
+    summary = (f"Seeded {len(rows)} areas ({len(AREAS)} bbox + {n_zones} real-geometry zones); "
+               f"pruned {len(pruned)}")
+    print(summary + (f": {', '.join(pruned)}." if pruned else "."))
 
 
 if __name__ == "__main__":

@@ -95,6 +95,10 @@ class Briefing:
     recommendation: str
     drivers: list[Driver] = field(default_factory=list)
     coverage: dict[str, int] = field(default_factory=dict)  # {available, total}
+    # Forward-looking "Outlook" — a freshwater forecast driver kept SEPARATE from
+    # `drivers` so it never feeds the verdict rollup or the coverage count. It
+    # informs ("pulse incoming"), it doesn't recolor today's conditions.
+    forecast: Driver | None = None
 
     def to_components(self) -> dict[str, Any]:
         return {
@@ -102,6 +106,7 @@ class Briefing:
             "recommendation": self.recommendation,
             "coverage": self.coverage,
             "drivers": [asdict(d) for d in self.drivers],
+            "forecast": asdict(self.forecast) if self.forecast else None,
         }
 
 
@@ -200,11 +205,11 @@ def assess_freshwater(fw_status: str | None, ratio: float | None, river: str | N
                       direction="up", value=round(ratio, 2) if ratio else None, units="× baseline")
     if fw_status == "drought":
         return Driver("freshwater", "Freshwater intrusion", CAUTION, "Low flow",
-                      f"{river_txt.capitalize()} is running well below normal — salinity is rising.",
+                      f"{_cap(river_txt)} is running well below normal — salinity is rising.",
                       direction="up", value=round(ratio, 2) if ratio else None, units="× baseline")
     if fw_status == "normal":
         return Driver("freshwater", "Freshwater intrusion", GOOD, "Normal",
-                      f"{river_txt.capitalize()} discharge is near its 30-day baseline.",
+                      f"{_cap(river_txt)} discharge is near its 30-day baseline.",
                       direction="steady", value=round(ratio, 2) if ratio else None, units="× baseline")
     return Driver("freshwater", "Freshwater intrusion", UNKNOWN, "No data",
                   "No linked river gauge with enough history to judge freshwater inflow.")
@@ -276,6 +281,84 @@ def assess_hab(alert_level: str | None, species: str | None) -> Driver:
                       f"A bloom watch{sp} is posted near this area.")
     return Driver("hab", "Harmful algal bloom", GOOD, "None",
                   "No active harmful algal bloom alerts overlap this area.")
+
+
+def _cap(s: str) -> str:
+    """Capitalize only the first letter (str.capitalize lowercases the rest,
+    which mangles proper river names like 'the Atchafalaya')."""
+    return s[:1].upper() + s[1:] if s else s
+
+
+def _human_lead(hours: int | None) -> str | None:
+    """Human lead time. 'now' when essentially immediate — i.e. the river is
+    already at/over the threshold rather than a future arrival."""
+    if hours is None:
+        return None
+    if hours < 12:
+        return "now"
+    if hours < 36:
+        return "~1 day"
+    return f"~{round(hours / 24)} days"
+
+
+def assess_freshwater_forecast(status: str | None, comp: dict, river: str | None) -> Driver | None:
+    """Forward 'Outlook' driver from the freshwater_forecast indicator. Returns
+    None when there's no usable forecast (no linked gauge / no NWM reach) so the
+    Outlook section simply doesn't appear rather than crying 'no data'. This
+    driver is attached to Briefing.forecast, NOT the drivers list, so it never
+    feeds the verdict rollup."""
+    if not status or status == "unknown":
+        return None
+    river_txt = f"the {river}" if river else "the upstream river"
+    peak = comp.get("peak_ratio")
+    low = comp.get("min_ratio")
+    horizon_days = round((comp.get("horizon_hours") or 240) / 24)
+
+    if status == "pulse_incoming":
+        lead = _human_lead(comp.get("pulse_in_hours"))
+        head = "Pulse arriving" if lead in (None, "now") else f"Pulse in {lead}"
+        when = "is arriving now" if lead in (None, "now") else f"is forecast to arrive in {lead}"
+        return Driver(
+            "freshwater_forecast", "Freshwater outlook", CAUTION, head,
+            f"A freshwater pulse from {river_txt} {when} "
+            f"(peaking near {peak:g}× normal flow). Expect salinity to drop across the "
+            f"bay — drill pressure eases, but watch for low-salinity stress if it's large or prolonged.",
+            direction="down", value=peak, units="× normal flow",
+        )
+    if status == "low_flow_building":
+        lead = _human_lead(comp.get("lowflow_in_hours"))
+        if lead in (None, "now"):
+            head = "Low flow"
+            when = f"is already running low (~{low:g}× normal) and is forecast to stay down"
+        else:
+            head = f"Low flow in {lead}"
+            when = f"is forecast to fall toward drought levels in {lead} (down to ~{low:g}× normal)"
+        return Driver(
+            "freshwater_forecast", "Freshwater outlook", CAUTION, head,
+            f"{_cap(river_txt)} flow {when} — salinity will rise; "
+            f"drill predation pressure may build.",
+            direction="up", value=low, units="× normal flow",
+        )
+    if status == "rising":
+        return Driver(
+            "freshwater_forecast", "Freshwater outlook", GOOD, "Rising",
+            f"{_cap(river_txt)} flow is forecast to rise modestly over the next days "
+            f"(to ~{peak:g}× normal); a mild freshening is likely.",
+            direction="down", value=peak, units="× normal flow",
+        )
+    if status == "falling":
+        return Driver(
+            "freshwater_forecast", "Freshwater outlook", GOOD, "Easing",
+            f"{_cap(river_txt)} flow is forecast to ease over the next days "
+            f"(to ~{low:g}× normal); salinity may edge up.",
+            direction="up", value=low, units="× normal flow",
+        )
+    # steady
+    return Driver(
+        "freshwater_forecast", "Freshwater outlook", GOOD, "Steady",
+        f"No significant change in {river_txt} inflow is forecast over the next ~{horizon_days} days.",
+        direction="steady",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +458,23 @@ def _latest_freshwater(conn: psycopg.Connection, area_id: str) -> tuple[str | No
     if row is None:
         return None, None
     return row[0], (float(row[1]) if row[1] is not None else None)
+
+
+def _latest_forecast(conn: psycopg.Connection, area_id: str) -> tuple[str | None, dict]:
+    """Latest freshwater_forecast row (status + components JSONB)."""
+    row = conn.execute(
+        """
+        SELECT status, components
+          FROM area_indicators
+         WHERE area_id = %s AND indicator = 'freshwater_forecast'
+         ORDER BY computed_at DESC
+         LIMIT 1
+        """,
+        (area_id,),
+    ).fetchone()
+    if row is None:
+        return None, {}
+    return row[0], (row[1] or {})
 
 
 def _nearest_station_value(
@@ -507,6 +607,13 @@ def build_briefing(conn: psycopg.Connection, area_id: str, slug: str, name: str)
 
     verdict = _rollup_verdict(drivers)
     available = sum(1 for d in drivers if d.status != UNKNOWN)
+
+    # Forward-looking outlook — read the precomputed freshwater_forecast row and
+    # build a separate Driver (NOT added to `drivers`, so it stays out of the
+    # rollup and coverage).
+    fc_status, fc_comp = _latest_forecast(conn, area_id)
+    forecast = assess_freshwater_forecast(fc_status, fc_comp, river)
+
     return Briefing(
         slug=slug,
         name=name,
@@ -515,6 +622,7 @@ def build_briefing(conn: psycopg.Connection, area_id: str, slug: str, name: str)
         recommendation=_recommendation(verdict, drivers),
         drivers=drivers,
         coverage={"available": available, "total": len(drivers)},
+        forecast=forecast,
     )
 
 

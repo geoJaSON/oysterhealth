@@ -75,6 +75,14 @@ def cmd_fetch_cmems(days: int = 1) -> None:
     print(f"CMEMS salinity: ok={r['ok']} empty={r['empty']} rows={r['rows']} areas={r['areas']}")
 
 
+def cmd_fetch_nwm() -> None:
+    """Fetch NWM short-range + medium-range-blend streamflow forecasts for every
+    gauge with an nwm_reach_id, into nwm_forecasts (feeds the freshwater forecast)."""
+    from api.services import nwm
+    r = nwm.sync_forecasts()
+    print(f"NWM forecasts: gauges={r['gauges']} points={r['points']} errors={r['errors']}")
+
+
 def cmd_compute_indicators() -> None:
     from api.services import indicators, synthesis
     r = indicators.compute_all()
@@ -122,6 +130,7 @@ COMMANDS = {
     "fetch-coops":       cmd_fetch_coops,
     "backfill-coops":    cmd_backfill_coops,
     "fetch-cmems":       cmd_fetch_cmems,
+    "fetch-nwm":         cmd_fetch_nwm,
     "compute-indicators": cmd_compute_indicators,
     "extend-partitions": cmd_extend_partitions,
 }

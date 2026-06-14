@@ -289,6 +289,138 @@ def compute_freshwater_intrusion(
 
 
 # ---------------------------------------------------------------------------
+# Freshwater forecast (forward-looking, from NWM streamflow forecasts)
+# ---------------------------------------------------------------------------
+# The forward companion to freshwater_intrusion: instead of "is a pulse
+# happening now", it answers "is one COMING, and when". Reads the latest NWM
+# medium-range-blend trajectory (~10 days) for the area's linked gauges and
+# compares the summed forecast flow to the same 30-day baseline the intrusion
+# indicator uses. Persisted as indicator='freshwater_forecast'; synthesis.py
+# turns it into a forward "Outlook" driver that informs but never recolors the
+# current verdict.
+
+FORECAST_RISING_RATIO = 1.20   # mild freshening, between baseline and a pulse
+
+
+def _forecast_trajectory(
+    conn: psycopg.Connection, area_id: str
+) -> tuple[float | None, list[tuple[datetime, float]], dict[str, Any]]:
+    """(baseline_total_cfs, [(valid_time, ratio)], meta) for the area's linked
+    gauges, where ratio = summed forecast flow / summed 30-day-mean flow. Uses
+    only valid_times where every forecasting gauge is present, for a clean sum."""
+    base_rows = conn.execute(
+        """
+        SELECT r.gauge_id, avg(r.discharge_cfs)
+          FROM gauge_readings r
+          JOIN areas a ON a.id = %s
+          JOIN usgs_gauges g ON g.id = r.gauge_id AND g.site_no = ANY(a.linked_gauges)
+         WHERE r.discharge_cfs IS NOT NULL
+           AND r.recorded_at >= now() - interval '30 days'
+         GROUP BY r.gauge_id
+        """,
+        (area_id,),
+    ).fetchall()
+    baseline = {gid: float(m) for gid, m in base_rows if m is not None and m > 0}
+    if not baseline:
+        return None, [], {"reason": "no_baseline"}
+
+    fc_rows = conn.execute(
+        """
+        WITH linked AS (
+          SELECT g.id FROM areas a
+            JOIN usgs_gauges g ON g.site_no = ANY(a.linked_gauges)
+           WHERE a.id = %s
+        ),
+        latest AS (
+          SELECT gauge_id, max(issued_at) AS issued
+            FROM nwm_forecasts
+           WHERE series = 'medium_range_blend' AND gauge_id IN (SELECT id FROM linked)
+           GROUP BY gauge_id
+        )
+        SELECT f.gauge_id, f.valid_time, f.flow_cfs
+          FROM nwm_forecasts f
+          JOIN latest l ON l.gauge_id = f.gauge_id AND l.issued = f.issued_at
+         WHERE f.series = 'medium_range_blend' AND f.valid_time > now()
+         ORDER BY f.valid_time
+        """,
+        (area_id,),
+    ).fetchall()
+    if not fc_rows:
+        return sum(baseline.values()), [], {"reason": "no_forecast"}
+
+    by_time: dict[datetime, dict[str, float]] = {}
+    gauges_fc: set = set()
+    for gid, vt, flow in fc_rows:
+        if gid in baseline and flow is not None:
+            by_time.setdefault(vt, {})[gid] = float(flow)
+            gauges_fc.add(gid)
+    baseline_total = sum(baseline[g] for g in gauges_fc)
+    if not gauges_fc or baseline_total <= 0:
+        return None, [], {"reason": "no_baseline"}
+
+    traj = [
+        (vt, sum(vals.values()) / baseline_total)
+        for vt, vals in sorted(by_time.items())
+        if len(vals) == len(gauges_fc)
+    ]
+    return baseline_total, traj, {"n_gauges": len(gauges_fc)}
+
+
+def compute_freshwater_forecast(
+    conn: psycopg.Connection, area_id: str
+) -> IndicatorResult:
+    """Forward-looking freshwater signal from the NWM streamflow forecast.
+
+    Status: pulse_incoming / low_flow_building / rising / falling / steady /
+    unknown. Score is the headline ratio (peak for pulses, min for low flow).
+    """
+    now = datetime.now(timezone.utc)
+    baseline_total, traj, meta = _forecast_trajectory(conn, area_id)
+    components: dict[str, Any] = {"baseline_cfs": baseline_total, **meta}
+
+    if not traj:
+        return IndicatorResult(
+            area_id, "freshwater_forecast", now, status="unknown", score=None,
+            components={**components, "reason": meta.get("reason", "no_forecast")},
+        )
+
+    ratios = [r for _, r in traj]
+    peak_ratio = max(ratios)
+    min_ratio = min(ratios)
+    peak_time = traj[ratios.index(peak_ratio)][0]
+
+    def _lead(threshold: float, above: bool) -> int | None:
+        for vt, r in traj:
+            if (r >= threshold) if above else (r <= threshold):
+                return max(0, round((vt - now).total_seconds() / 3600))
+        return None
+
+    components.update({
+        "peak_ratio": round(peak_ratio, 2),
+        "peak_in_hours": max(0, round((peak_time - now).total_seconds() / 3600)),
+        "min_ratio": round(min_ratio, 2),
+        "horizon_hours": round((traj[-1][0] - now).total_seconds() / 3600),
+    })
+
+    if peak_ratio >= ACTIVE_INTRUSION_RATIO:
+        components["pulse_in_hours"] = _lead(ACTIVE_INTRUSION_RATIO, above=True)
+        return IndicatorResult(area_id, "freshwater_forecast", now,
+                               status="pulse_incoming", score=round(peak_ratio, 2), components=components)
+    if min_ratio <= DROUGHT_RATIO:
+        components["lowflow_in_hours"] = _lead(DROUGHT_RATIO, above=False)
+        return IndicatorResult(area_id, "freshwater_forecast", now,
+                               status="low_flow_building", score=round(min_ratio, 2), components=components)
+    if peak_ratio >= FORECAST_RISING_RATIO:
+        return IndicatorResult(area_id, "freshwater_forecast", now,
+                               status="rising", score=round(peak_ratio, 2), components=components)
+    if min_ratio <= 0.8:
+        return IndicatorResult(area_id, "freshwater_forecast", now,
+                               status="falling", score=round(min_ratio, 2), components=components)
+    return IndicatorResult(area_id, "freshwater_forecast", now,
+                           status="steady", score=round(sum(ratios) / len(ratios), 2), components=components)
+
+
+# ---------------------------------------------------------------------------
 # Persistence + orchestration
 # ---------------------------------------------------------------------------
 
@@ -314,13 +446,20 @@ def persist(conn: psycopg.Connection, result: IndicatorResult) -> None:
 
 
 def compute_all() -> dict[str, int]:
-    """Compute every indicator for every area, persist results, return a count."""
+    """Compute every indicator for every area, persist results, return the
+    freshwater_intrusion status counts (unchanged contract). The forward-looking
+    freshwater_forecast is computed + persisted alongside and logged separately."""
     report: dict[str, int] = {}
+    fc_report: dict[str, int] = {}
     with psycopg.connect(settings.database_dsn, autocommit=True) as conn:
         area_ids = [r[0] for r in conn.execute("SELECT id FROM areas").fetchall()]
         for area_id in area_ids:
             result = compute_freshwater_intrusion(conn, area_id)
             persist(conn, result)
             report[result.status] = report.get(result.status, 0) + 1
-    log.info("Indicator compute_all: %s", report)
+
+            forecast = compute_freshwater_forecast(conn, area_id)
+            persist(conn, forecast)
+            fc_report[forecast.status] = fc_report.get(forecast.status, 0) + 1
+    log.info("Indicator compute_all: intrusion=%s forecast=%s", report, fc_report)
     return report

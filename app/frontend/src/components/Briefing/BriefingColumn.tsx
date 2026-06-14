@@ -187,6 +187,17 @@ function Detail({
             ))}
           </div>
 
+          {briefing.forecast && (
+            <>
+              <h3 className="briefing-section">
+                Outlook <span className="briefing-section-sub">· next 10 days</span>
+              </h3>
+              <div className="driver-list">
+                <DriverRow driver={briefing.forecast} />
+              </div>
+            </>
+          )}
+
           {briefing.coverage && (
             <p className="briefing-coverage">
               Based on {briefing.coverage.available} of {briefing.coverage.total}{" "}
