@@ -1,12 +1,18 @@
-# --- Production build: compile, then serve via nginx on the VPS ---
+# --- Production web tier: build the SPA, then serve it + reverse-proxy /api via Caddy.
+# Build context is app/ (see docker-compose.prod.yml: web.build.context = ..) so we
+# can COPY both the frontend source and docker/Caddyfile. (The old version COPYied
+# ../docker/nginx.conf with context=app/frontend, which Docker forbids.)
 FROM node:20-alpine AS builder
 WORKDIR /app
-COPY package.json ./
-RUN npm install
-COPY . .
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ .
+# Same-origin API in prod: the SPA fetches /api and Caddy proxies it to the
+# backend, so no absolute API host is baked in.
+ENV VITE_API_BASE_URL=/api
 RUN npm run build
 
-FROM nginx:1.27-alpine
-COPY --from=builder /app/dist /usr/share/nginx/html
-COPY ../docker/nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+FROM caddy:2-alpine
+COPY --from=builder /app/dist /srv
+COPY docker/Caddyfile /etc/caddy/Caddyfile
+EXPOSE 80 443

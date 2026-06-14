@@ -27,8 +27,23 @@ After any edit, from `app/backend` with the venv active:
 python ../scripts/build_zone_geoms.py <slug>     # regenerates that bay in zone_geoms.json
 
 python ../scripts/seed_areas.py                   # push areas to the DB (upsert + prune)
+
+# ⚠️ ADDED or RESHAPED an area? Its data_snapshots are keyed by area_id, so a new
+# area_id starts with NONE — re-fetch the per-area satellite + modeled data, or the
+# salinity / turbidity / SST drivers show "No data" until the next scheduled run:
+python manage.py fetch-erddap                     # sst / chlorophyll / turbidity
+python manage.py fetch-cmems                      # modeled salinity (needs CMEMS creds)
+
 python manage.py compute-indicators               # refresh briefings/verdicts
 ```
+
+> **Why the re-fetch matters:** the gauge/station data is global (shared across
+> areas), but the satellite + CMEMS values live in `data_snapshots` keyed by
+> `area_id`. When you reshape a bay into zones (new slugs = new `area_id`s) the old
+> bay's snapshots are gone and the new zones have none until fetched. CO-OPS reports
+> no salinity for the seeded stations, so the salinity driver depends entirely on the
+> modeled CMEMS fallback — which is why a reshape that skips `fetch-cmems` blanks
+> salinity. (In production, beat re-fetches these daily, so it self-heals within a day.)
 
 `seed_areas.py` is **idempotent** and the **single source of truth** for which
 areas exist: it upserts every area in (`AREAS` + the manifest) and then **prunes**

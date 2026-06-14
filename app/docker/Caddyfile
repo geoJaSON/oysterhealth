@@ -1,0 +1,21 @@
+# Caddy edge for production: serves the built SPA and reverse-proxies /api to the
+# backend container, with automatic HTTPS (Let's Encrypt) when SITE_ADDRESS is a
+# real domain. Set SITE_ADDRESS in .env:
+#   SITE_ADDRESS=oysterhealth.example.com   → auto-TLS on 443 (+ HTTP→HTTPS)
+#   SITE_ADDRESS=:80                        → plain HTTP (local / pre-DNS testing)
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# API: keep the /api prefix (FastAPI routers are mounted at /api), so this is
+	# `handle` (not `handle_path`, which would strip it).
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	# SPA: everything else is the static build with history-mode fallback.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

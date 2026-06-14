@@ -29,6 +29,10 @@ dist/
 docker/data/
 docker/.volumes/
 
+# Cached raw geometry downloads (OSM/NHD) for the zone builder — regenerable.
+# The built manifest (app/scripts/zone_geoms.json) IS committed.
+app/scripts/.cache/
+
 # Reports / artifacts
 *.pdf
 !app/backend/templates/reports/*.pdf

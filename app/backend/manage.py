@@ -96,6 +96,39 @@ def cmd_compute_indicators() -> None:
         print(f"  {status}: {n}")
 
 
+def cmd_migrate() -> None:
+    """Apply idempotent SQL migrations in migrations/ in filename order, tracked
+    in a schema_migrations table. db/init/*.sql only runs on a FRESH volume, so
+    schema changes to an existing DB live here — run this on every deploy."""
+    from pathlib import Path
+
+    import psycopg
+    from settings import settings
+
+    mig_dir = Path(__file__).resolve().parent / "migrations"
+    if not mig_dir.is_dir():
+        raise SystemExit(
+            f"migrate: no migrations directory at {mig_dir} — was it committed and "
+            "baked into the image? (refusing to silently apply zero migrations)"
+        )
+    files = sorted(mig_dir.glob("*.sql"))
+    with psycopg.connect(settings.database_dsn, autocommit=True) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+        )
+        applied = {r[0] for r in conn.execute("SELECT filename FROM schema_migrations").fetchall()}
+        ran = 0
+        for f in files:
+            if f.name in applied:
+                continue
+            conn.execute(f.read_text(encoding="utf-8"))
+            conn.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (f.name,))
+            print(f"  applied {f.name}")
+            ran += 1
+    print(f"migrate: {ran} new migration(s) applied ({len(files)} total).")
+
+
 def cmd_extend_partitions() -> None:
     import psycopg
     from settings import settings
@@ -131,6 +164,7 @@ COMMANDS = {
     "backfill-coops":    cmd_backfill_coops,
     "fetch-cmems":       cmd_fetch_cmems,
     "fetch-nwm":         cmd_fetch_nwm,
+    "migrate":           cmd_migrate,
     "compute-indicators": cmd_compute_indicators,
     "extend-partitions": cmd_extend_partitions,
 }

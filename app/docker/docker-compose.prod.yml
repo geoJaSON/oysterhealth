@@ -1,0 +1,119 @@
+name: oysterhealth-prod
+
+# Production compose for a single VPS. Differences from docker-compose.yml (dev):
+#  - db / redis / backend are NOT published to the host — only the web tier is
+#    reachable, on 80/443. (The dev compose publishes 5433/6379/8000, which would
+#    expose Postgres and an unauthenticated Redis to the internet on a VPS.)
+#  - images are baked (no source bind-mounts), so the running code == the build.
+#  - the web tier is the Caddy prod image (built SPA + /api proxy + auto-TLS),
+#    not the Vite dev server.
+#
+# Requires a prod .env at the repo root (see .env.prod.example) with CONTAINER
+# networking values: POSTGRES_HOST=db, POSTGRES_PORT=5432, REDIS_URL=redis://redis:6379/0,
+# CORS_ORIGINS=https://<domain>, SITE_ADDRESS=<domain>, and a strong POSTGRES_PASSWORD.
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: oyster_db
+    restart: unless-stopped
+    env_file: ../../.env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../db/init:/docker-entrypoint-initdb.d:ro   # runs once, on an empty volume
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: oyster_redis
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../docker/Dockerfile.backend
+    image: oysterhealth-backend            # workers + beat reuse this image
+    container_name: oyster_backend
+    restart: unless-stopped
+    env_file: ../../.env
+    # --proxy-headers/--forwarded-allow-ips: trust Caddy's X-Forwarded-* so
+    # request scheme is https and client IP is the real caller (the slowapi rate
+    # limiter keys on it). Safe to trust "*" — backend is internal-only.
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips=*
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    expose:
+      - "8000"                             # internal only; the web tier proxies it
+
+  worker_io:
+    image: oysterhealth-backend
+    pull_policy: never          # local-only tag; fail fast if not built, never pull
+    container_name: oyster_worker_io
+    restart: unless-stopped
+    env_file: ../../.env
+    command: celery -A celery_app worker -Q io_bound --concurrency=4 --loglevel=info
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      backend: {condition: service_started}
+
+  worker_geo:
+    image: oysterhealth-backend
+    pull_policy: never
+    container_name: oyster_worker_geo
+    restart: unless-stopped
+    env_file: ../../.env
+    # CMEMS/netCDF is memory-heavy; celery_app restarts each child after 10 tasks.
+    command: celery -A celery_app worker -Q geo_heavy --concurrency=2 --loglevel=info
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      backend: {condition: service_started}
+
+  beat:
+    image: oysterhealth-backend
+    pull_policy: never
+    container_name: oyster_beat
+    restart: unless-stopped
+    env_file: ../../.env
+    command: celery -A celery_app beat --loglevel=info
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      backend: {condition: service_started}
+
+  web:
+    build:
+      context: ..                          # app/ — so the image can COPY frontend/ AND docker/Caddyfile
+      dockerfile: docker/Dockerfile.frontend.prod
+    image: oysterhealth-web
+    container_name: oyster_web
+    restart: unless-stopped
+    env_file: ../../.env                   # provides SITE_ADDRESS for Caddy auto-TLS
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"                      # HTTP/3 (QUIC)
+    volumes:
+      - caddy_data:/data                   # persist issued TLS certs across restarts
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
