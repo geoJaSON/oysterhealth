@@ -31,9 +31,14 @@ ZONE_MANIFEST = Path(__file__).parent / "zone_geoms.json"
 # re-seed; see AREAS.md.
 AREAS = [
     # --- Gulf of Mexico ---
-    # NB: barataria-bay, galveston-bay (gulf) and albemarle-sound (east coast) are
-    # absent here — they're zoned from NHD geometry via the manifest (see
-    # build_zone_geoms.py), alongside mobile/chesapeake/pamlico.
+    # NB: barataria-bay (gulf) is zoned from NHD geometry via the manifest (see
+    # build_zone_geoms.py), alongside mobile/chesapeake/pamlico. galveston-bay and
+    # albemarle-sound were tried as zones but REVERTED to single bboxes — CMEMS
+    # (~8 km) couldn't resolve their sub-bay zones, so inner zones went blank.
+    ("galveston-bay", "Galveston Bay", "gulf",
+     [-95.10, 29.30, -94.65, 29.85],
+     "Texas's primary oyster bay; Trinity + San Jacinto + Buffalo Bayou inflow.",
+     ["08066500", "08068000", "08070000", "08074000"]),
     ("terrebonne-bay", "Terrebonne Bay", "gulf",
      [-90.95, 29.10, -90.50, 29.45],
      "South-central Louisiana bay system. Heavy shrimping.",
@@ -89,6 +94,10 @@ AREAS = [
      [-75.50, 38.80, -74.85, 39.45],
      "DE/NJ estuary fed by the Delaware River.",
      []),
+    ("albemarle-sound", "Albemarle Sound", "east_coast",
+     [-76.80, 35.85, -75.65, 36.15],
+     "NC's northern sound; fed by the Roanoke and Chowan rivers.",
+     ["02080500"]),
     ("core-sound", "Core Sound", "east_coast",
      [-76.55, 34.60, -76.20, 34.95],
      "Narrow NC sound behind the Outer Banks.",

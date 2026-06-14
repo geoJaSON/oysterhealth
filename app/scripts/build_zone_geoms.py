@@ -143,49 +143,10 @@ BAYS: dict = {
              "OFS in-bay salinity; directional/discharge-proxy coverage only."),
         ],
     },
-    "galveston-bay": {
-        "region": "gulf",
-        # Tight bbox: a wider one trips NHD's 2000-record cap and drops the main
-        # bay polygon. ArcGIS returns each intersecting feature's FULL geometry,
-        # so the bay is captured even though it extends past this box.
-        "fetch": {"kind": "nhd_bbox", "bbox": (29.30, -95.15, 29.85, -94.60)},
-        "zones": [
-            ("galveston-bay-upper", "Galveston Bay — Upper (Trinity Bay)", [-95.20, 29.60, -94.55, 29.95],
-             ["08066500", "08068000", "08070000", "08074000"],
-             "Upper Galveston Bay (Trinity Bay head + Houston Ship Channel): oligohaline. "
-             "The Trinity (08066500) is the main driver (~50% of estuary inflow); the San "
-             "Jacinto forks (08068000/08070000) and Buffalo Bayou (08074000) supply the "
-             "HSC/upper-west side that the Trinity alone misses."),
-            ("galveston-bay-mid", "Galveston Bay — Mid", [-95.20, 29.45, -94.55, 29.60],
-             ["08066500"],
-             "Mid Galveston Bay: brackish transition near the Eagle Point constriction. "
-             "The Trinity (08066500) is a diluted, lagged partial driver here."),
-            ("galveston-bay-lower", "Galveston Bay — Lower", [-95.20, 29.20, -94.55, 29.45],
-             [],
-             "Lower Galveston Bay: euhaline at the Bolivar Roads Gulf entrance, "
-             "tide/Gulf-exchange dominated — no upstream gauge applies; NGOFS2 salinity."),
-        ],
-    },
-    "albemarle-sound": {
-        "region": "east_coast",
-        "fetch": {"kind": "nhd_bbox", "bbox": (35.85, -76.95, 36.18, -75.60)},
-        "zones": [
-            ("albemarle-sound-west", "Albemarle Sound — West", [-76.95, 35.80, -76.45, 36.20],
-             ["02080500"],
-             "West Albemarle Sound: freshest river-confluence end (often <1 psu). The "
-             "Roanoke (02080500) is the largest single freshwater source; the Chowan and "
-             "north-shore rivers are ungauged, so this is a Roanoke-only index."),
-            ("albemarle-sound-mid", "Albemarle Sound — Mid", [-76.45, 35.80, -76.05, 36.20],
-             ["02080500"],
-             "Mid Albemarle Sound: central open body. The Roanoke (02080500) is carried as "
-             "a lagged plume proxy. Wind-dominated sound — directional coverage only, no "
-             "OFS in-bay salinity."),
-            ("albemarle-sound-east", "Albemarle Sound — East", [-76.05, 35.80, -75.55, 36.20],
-             [],
-             "East Albemarle Sound: saltier wind/exchange end toward the Croatan and "
-             "Roanoke sounds — no direct river gauge applies."),
-        ],
-    },
+    # NOTE: galveston-bay and albemarle-sound were zoned here but REVERTED to single
+    # bounding boxes in seed_areas.py — CMEMS (~8 km) only reached their outer/oceanic
+    # zone, so the inner zones went blank (inconsistent within-bay data). A single bbox
+    # samples the covered cells and gives one consistent salinity per bay.
 }
 
 # Bays with a clean single OSM water relation. Barataria turns out NOT to be one
